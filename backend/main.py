@@ -1,3 +1,5 @@
+from services.trip_service import get_trip_category, get_travel_season, get_transport_category, calculate_daily_budget
+
 def input_required(prompt):
     """Prompt until the user enters a non-empty value."""
     while True:
@@ -5,7 +7,6 @@ def input_required(prompt):
         if value:
             return value
         print("  This field is required. Please enter a value.")
-
 
 def input_positive_number(prompt):
     """Prompt until the user enters a valid positive number."""
@@ -23,7 +24,6 @@ def input_positive_number(prompt):
         except ValueError:
             print("  Invalid input. Please enter a numeric value.")
 
-
 def input_positive_int(prompt):
     """Prompt until the user enters a valid positive integer."""
     while True:
@@ -40,7 +40,6 @@ def input_positive_int(prompt):
         except ValueError:
             print("  Invalid input. Please enter a whole number.")
 
-
 def input_cost(prompt):
     """Prompt for an optional cost. Returns 0.0 if left empty."""
     while True:
@@ -55,7 +54,6 @@ def input_cost(prompt):
             return number
         except ValueError:
             print("  Invalid input. Please enter a numeric value or leave empty.")
-
 
 def collect_trip_details():
     """Ask the user for all trip details and return them as a dict."""
@@ -85,9 +83,12 @@ def collect_trip_details():
         + trip["miscellaneous_cost"]
     )
     trip["remaining_budget"] = trip["budget"] - trip["total_estimated_cost"]
+    trip["trip_category"]      = get_trip_category(trip["budget"])
+    trip["travel_season"]      = get_travel_season(trip["travel_month"])
+    trip["transport_category"] = get_transport_category(trip["budget"])
+    trip["daily_budget"]       = calculate_daily_budget(trip["budget"], trip["days"])
 
     return trip
-
 
 def print_trip_summary(trip):
     """Print a formatted summary of the trip."""
@@ -97,10 +98,14 @@ def print_trip_summary(trip):
     print("      Trip Summary      ")
     print("========================")
     print(f"  Destination      : {trip['destination']}, {trip['country']}")
-    print(f"  Travel Month     : {trip['travel_month']}")
-    print(f"  Duration         : {trip['days']} day(s)")
+    print(f"  Travel Month     : {trip['travel_month']} ({trip['travel_season']})")
+    print(f"  Season           : {trip['travel_season']}")
+    print(f"  Days             : {trip['days']} day(s)")
     print(f"  Travel Style     : {trip['travel_style']}")
+    print(f"  Trip Category    : {trip['trip_category']}")
+    print(f"  Transport        : {trip['transport_category']}")
     print(f"  Currency         : {cur}")
+    print(f"  Daily Budget     : {trip['daily_budget']:>10.2f} {cur}")
     print("------------------------")
     print(f"  Hotel Cost       : {trip['hotel_cost']:>10.2f} {cur}")
     print(f"  Transportation   : {trip['transportation_cost']:>10.2f} {cur}")
@@ -112,12 +117,11 @@ def print_trip_summary(trip):
     print("------------------------")
 
     if trip["total_estimated_cost"] > trip["budget"]:
-        print(f"  ⚠  Over Budget by : {abs(trip['remaining_budget']):>10.2f} {cur}")
+        print(f"⚠  Over Budget by : {abs(trip['remaining_budget']):>10.2f} {cur}")
     else:
-        print(f"  ✔  Remaining       : {trip['remaining_budget']:>10.2f} {cur}")
+        print(f"✔  Remaining      : {trip['remaining_budget']:>10.2f} {cur}")
 
     print("========================\n")
-
 
 # --- Main ---
 trip = collect_trip_details()
