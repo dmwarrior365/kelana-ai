@@ -1,128 +1,153 @@
-from services.trip_service import get_trip_category, get_travel_season, get_transport_category, calculate_daily_budget
+from fastapi import FastAPI
+from pydantic import BaseModel, Field
+from typing import Optional, List
+from services.trip_service import (
+    get_trip_category,
+    get_travel_season,
+    get_transport_category,
+    calculate_daily_budget,
+)
 
-def input_required(prompt):
-    """Prompt until the user enters a non-empty value."""
-    while True:
-        value = input(prompt).strip()
-        if value:
-            return value
-        print("  This field is required. Please enter a value.")
+app = FastAPI(
+    title="KelanaAI",
+    description="AI-powered travel planning API",
+    version="1.0.0",
+)
 
-def input_positive_number(prompt):
-    """Prompt until the user enters a valid positive number."""
-    while True:
-        value = input(prompt).strip()
-        if not value:
-            print("  This field is required. Please enter a number.")
-            continue
-        try:
-            number = float(value)
-            if number < 0:
-                print("  Please enter a non-negative number.")
-                continue
-            return number
-        except ValueError:
-            print("  Invalid input. Please enter a numeric value.")
+# ─── STATIC DATA ──────────────────────────────────────────────────────────────
 
-def input_positive_int(prompt):
-    """Prompt until the user enters a valid positive integer."""
-    while True:
-        value = input(prompt).strip()
-        if not value:
-            print("  This field is required. Please enter a number.")
-            continue
-        try:
-            number = int(value)
-            if number <= 0:
-                print("  Please enter a number greater than 0.")
-                continue
-            return number
-        except ValueError:
-            print("  Invalid input. Please enter a whole number.")
+RECOMMENDATIONS = ["Tokyo Tower", "Mount Fuji", "Shibuya"]
+TRANSPORTATIONS = ["Bus", "Train", "Flight"]
+TRIP_CATEGORIES = [
+    {"name": "Backpacker", "budget_range": "below 1,000"},
+    {"name": "Standard",   "budget_range": "1,000 – 3,000"},
+    {"name": "Luxury",     "budget_range": "above 3,000"},
+]
 
-def input_cost(prompt):
-    """Prompt for an optional cost. Returns 0.0 if left empty."""
-    while True:
-        value = input(prompt).strip()
-        if not value:
-            return 0.0
-        try:
-            number = float(value)
-            if number < 0:
-                print("  Please enter a non-negative number.")
-                continue
-            return number
-        except ValueError:
-            print("  Invalid input. Please enter a numeric value or leave empty.")
+# ─── SCHEMAS ──────────────────────────────────────────────────────────────────
 
-def collect_trip_details():
-    """Ask the user for all trip details and return them as a dict."""
-    print("========================")
-    print("        KelanaAI        ")
-    print("========================")
-    print("Enter your trip details:\n")
+class TripRequest(BaseModel):
+    destination: str
+    days: int = Field(gt=0, description="Number of travel days")
+    budget: float = Field(gt=0, description="Total trip budget")
+    currency: str = "USD"
+    travel_style: Optional[str] = None
+    travel_month: Optional[str] = None
 
-    trip = {
-        "destination":          input_required("Destination : "),
-        "country":              input_required("Country : "),
-        "travel_month":         input_required("Travel Month : "),
-        "days":                 input_positive_int("Number of Days : "),
-        "budget":               input_positive_number("Total Budget : "),
-        "currency":             input_required("Currency : "),
-        "travel_style":         input_required("Travel Style : "),
-        "hotel_cost":           input_cost("Hotel Cost : "),
-        "transportation_cost":  input_cost("Transportation : "),
-        "food_cost":            input_cost("Food Cost : "),
-        "miscellaneous_cost":   input_cost("Misc. Cost : "),
+class BudgetRequest(BaseModel):
+    budget: float = Field(gt=0)
+
+
+# ─── GENERAL ──────────────────────────────────────────────────────────────────
+
+@app.get("/", tags=["General"])
+def home():
+    return {"message": "Welcome to KelanaAI"}
+
+@app.get("/health", tags=["General"])
+def health():
+    return {"status": "ok"}
+
+
+# ─── TRIPS ────────────────────────────────────────────────────────────────────
+
+@app.post("/api/v1/trips", tags=["Trips"])
+def create_trip(trip: TripRequest):
+    """Returns a full trip summary including category, transport, daily budget, and season."""
+    return {
+        "destination":              trip.destination,
+        "days":                     trip.days,
+        "budget":                   trip.budget,
+        "currency":                 trip.currency,
+        "daily_budget":             round(calculate_daily_budget(trip.budget, trip.days), 2),
+        "travel_style":             trip.travel_style,
+        "travel_month":             trip.travel_month,
+        "travel_season":            get_travel_season(trip.travel_month) if trip.travel_month else None,
+        "category":                 get_trip_category(trip.budget),
+        "recommendation_transport": get_transport_category(trip.budget),
     }
 
-    trip["total_estimated_cost"] = (
-        trip["hotel_cost"]
-        + trip["transportation_cost"]
-        + trip["food_cost"]
-        + trip["miscellaneous_cost"]
-    )
-    trip["remaining_budget"] = trip["budget"] - trip["total_estimated_cost"]
-    trip["trip_category"]      = get_trip_category(trip["budget"])
-    trip["travel_season"]      = get_travel_season(trip["travel_month"])
-    trip["transport_category"] = get_transport_category(trip["budget"])
-    trip["daily_budget"]       = calculate_daily_budget(trip["budget"], trip["days"])
 
-    return trip
+# ─── TRIP CATEGORIES ──────────────────────────────────────────────────────────
 
-def print_trip_summary(trip):
-    """Print a formatted summary of the trip."""
-    cur = trip["currency"]
+@app.get("/api/v1/trip-categories", tags=["Trip Categories"])
+def list_trip_categories():
+    """Returns all available trip categories and their budget ranges."""
+    return TRIP_CATEGORIES
 
-    print("\n========================")
-    print("      Trip Summary      ")
-    print("========================")
-    print(f"  Destination      : {trip['destination']}, {trip['country']}")
-    print(f"  Travel Month     : {trip['travel_month']} ({trip['travel_season']})")
-    print(f"  Season           : {trip['travel_season']}")
-    print(f"  Days             : {trip['days']} day(s)")
-    print(f"  Travel Style     : {trip['travel_style']}")
-    print(f"  Trip Category    : {trip['trip_category']}")
-    print(f"  Transport        : {trip['transport_category']}")
-    print(f"  Currency         : {cur}")
-    print(f"  Daily Budget     : {trip['daily_budget']:>10.2f} {cur}")
-    print("------------------------")
-    print(f"  Hotel Cost       : {trip['hotel_cost']:>10.2f} {cur}")
-    print(f"  Transportation   : {trip['transportation_cost']:>10.2f} {cur}")
-    print(f"  Food Cost        : {trip['food_cost']:>10.2f} {cur}")
-    print(f"  Misc. Cost       : {trip['miscellaneous_cost']:>10.2f} {cur}")
-    print("------------------------")
-    print(f"  Total Cost       : {trip['total_estimated_cost']:>10.2f} {cur}")
-    print(f"  Budget           : {trip['budget']:>10.2f} {cur}")
-    print("------------------------")
+@app.post("/api/v1/trip-categories", tags=["Trip Categories"])
+def get_category(req: BudgetRequest):
+    """Returns the trip category for a given budget."""
+    return {
+        "budget":   req.budget,
+        "category": get_trip_category(req.budget),
+    }
 
-    if trip["total_estimated_cost"] > trip["budget"]:
-        print(f"⚠  Over Budget by : {abs(trip['remaining_budget']):>10.2f} {cur}")
+
+# ─── TRANSPORTATIONS ──────────────────────────────────────────────────────────
+
+@app.get("/api/v1/transportations", tags=["Transportations"])
+def list_transportations() -> List[str]:
+    """Returns a list of all available transport options."""
+    return TRANSPORTATIONS
+
+@app.post("/api/v1/transportations", tags=["Transportations"])
+def get_transportation(req: BudgetRequest):
+    """Returns the recommended transport for a given budget."""
+    return {
+        "budget":                   req.budget,
+        "category":                 get_trip_category(req.budget),
+        "recommendation_transport": get_transport_category(req.budget),
+    }
+
+
+# ─── RECOMMENDATIONS ──────────────────────────────────────────────────────────
+
+@app.get("/api/v1/recommendations", tags=["Recommendations"])
+def list_recommendations() -> List[str]:
+    """Returns a list of recommended places to visit."""
+    return RECOMMENDATIONS
+
+@app.post("/api/v1/recommendations", tags=["Recommendations"])
+def get_recommendations(trip: TripRequest):
+    """Returns personalised travel recommendations based on trip details."""
+    category      = get_trip_category(trip.budget)
+    transport     = get_transport_category(trip.budget)
+    daily_budget  = calculate_daily_budget(trip.budget, trip.days)
+    travel_season = get_travel_season(trip.travel_month) if trip.travel_month else None
+
+    if category == "Backpacker":
+        tips = [
+            "Stay in hostels or guesthouses",
+            "Use public transport and local buses",
+            "Eat at street food stalls",
+            "Book flights early for the best deals",
+        ]
+    elif category == "Standard":
+        tips = [
+            "Book 3-star hotels or Airbnb",
+            "Mix of economy flights and local transport",
+            "Balance between local restaurants and cafes",
+            "Consider travel insurance",
+        ]
     else:
-        print(f"✔  Remaining      : {trip['remaining_budget']:>10.2f} {cur}")
+        tips = [
+            "Stay in 4 or 5-star hotels or resorts",
+            "Business class flights or private transfers",
+            "Fine dining and curated experiences",
+            "Hire a local guide for personalised tours",
+        ]
 
-    print("========================\n")
-
-# --- Main ---
-trip = collect_trip_details()
-print_trip_summary(trip)
+    return {
+        "destination":              trip.destination,
+        "days":                     trip.days,
+        "budget":                   trip.budget,
+        "currency":                 trip.currency,
+        "daily_budget":             round(daily_budget, 2),
+        "travel_style":             trip.travel_style,
+        "travel_month":             trip.travel_month,
+        "travel_season":            travel_season,
+        "category":                 category,
+        "recommendation_transport": transport,
+        "tips":                     tips,
+    }
