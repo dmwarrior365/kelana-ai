@@ -1,12 +1,19 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, Depends, HTTPException
 from pydantic import BaseModel, Field
 from typing import Optional, List
+from sqlalchemy.orm import Session
+
 from services.trip_service import (
     get_trip_category,
     get_travel_season,
     get_transport_category,
     calculate_daily_budget,
 )
+from database import Base, engine, get_db, check_db_connection
+from models.trip import Trip
+
+# Create all tables on startup if they don't exist yet
+Base.metadata.create_all(bind=engine)
 
 app = FastAPI(
     title="KelanaAI",
@@ -15,7 +22,6 @@ app = FastAPI(
 )
 
 # ─── STATIC DATA ──────────────────────────────────────────────────────────────
-
 RECOMMENDATIONS = ["Tokyo Tower", "Mount Fuji", "Shibuya"]
 TRANSPORTATIONS = ["Bus", "Train", "Flight"]
 TRIP_CATEGORIES = [
@@ -25,7 +31,6 @@ TRIP_CATEGORIES = [
 ]
 
 # ─── SCHEMAS ──────────────────────────────────────────────────────────────────
-
 class TripRequest(BaseModel):
     destination: str
     days: int = Field(gt=0, description="Number of travel days")
@@ -37,6 +42,9 @@ class TripRequest(BaseModel):
 class BudgetRequest(BaseModel):
     budget: float = Field(gt=0)
 
+class BudgetUpdateRequest(BaseModel):
+    budget: float = Field(gt=0, description="New budget to update and recalculate from")
+
 
 # ─── GENERAL ──────────────────────────────────────────────────────────────────
 
@@ -46,26 +54,103 @@ def home():
 
 @app.get("/health", tags=["General"])
 def health():
-    return {"status": "ok"}
-
+    db_ok = check_db_connection()
+    return {
+        "status":   "ok" if db_ok else "degraded",
+        "database": "connected" if db_ok else "unreachable",
+    }
 
 # ─── TRIPS ────────────────────────────────────────────────────────────────────
 
 @app.post("/api/v1/trips", tags=["Trips"])
-def create_trip(trip: TripRequest):
-    """Returns a full trip summary including category, transport, daily budget, and season."""
-    return {
-        "destination":              trip.destination,
-        "days":                     trip.days,
-        "budget":                   trip.budget,
-        "currency":                 trip.currency,
-        "daily_budget":             round(calculate_daily_budget(trip.budget, trip.days), 2),
-        "travel_style":             trip.travel_style,
-        "travel_month":             trip.travel_month,
-        "travel_season":            get_travel_season(trip.travel_month) if trip.travel_month else None,
-        "category":                 get_trip_category(trip.budget),
-        "recommendation_transport": get_transport_category(trip.budget),
-    }
+def create_trip(req: TripRequest, db: Session = Depends(get_db)):
+    """Creates a trip, saves it to the database, and returns the saved record."""
+
+    # Compute derived fields
+    category      = get_trip_category(req.budget)
+    transport     = get_transport_category(req.budget)
+    daily_budget  = round(calculate_daily_budget(req.budget, req.days), 2)
+    travel_season = get_travel_season(req.travel_month) if req.travel_month else None
+
+    # Build ORM object
+    trip = Trip(
+        destination             = req.destination,
+        days                    = req.days,
+        budget                  = req.budget,
+        currency                = req.currency,
+        travel_style            = req.travel_style,
+        travel_month            = req.travel_month,
+        travel_season           = travel_season,
+        category                = category,
+        recommendation_transport= transport,
+        daily_budget            = daily_budget,
+    )
+
+    # Open → save → commit → refresh → close (handled by get_db)
+    try:
+        db.add(trip)
+        db.commit()
+        db.refresh(trip)   # pulls the generated id and any DB defaults back
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Failed to save trip: {str(e)}")
+
+    return trip
+
+@app.get("/api/v1/trips", tags=["Trips"])
+def list_trips(db: Session = Depends(get_db)):
+    """Returns all saved trips from the database."""
+    trips = db.query(Trip).all()
+    db.close()
+    return trips
+
+@app.get("/api/v1/trips/{trip_id}", tags=["Trips"])
+def get_trip(trip_id: int, db: Session = Depends(get_db)):
+    """Returns a single trip by ID."""
+    trip = db.query(Trip).filter(Trip.id == trip_id).first()
+    if not trip:
+        raise HTTPException(status_code=404, detail="Trip not found")
+    db.close()
+    return trip
+
+
+@app.put("/api/v1/trips/{trip_id}", tags=["Trips"])
+def update_trip(trip_id: int, req: BudgetUpdateRequest, db: Session = Depends(get_db)):
+    """Updates the budget for a trip and recalculates category and daily_budget."""
+    trip = db.query(Trip).filter(Trip.id == trip_id).first()
+    if not trip:
+        raise HTTPException(status_code=404, detail="Trip not found")
+
+    # Only budget changes — recalculate dependent fields
+    trip.budget       = req.budget
+    trip.category     = get_trip_category(req.budget)
+    trip.daily_budget = round(calculate_daily_budget(req.budget, trip.days), 2)
+    trip.recommendation_transport = get_transport_category(req.budget)
+
+    try:
+        db.commit()
+        db.refresh(trip)
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Failed to update trip: {str(e)}")
+
+    return trip
+
+@app.delete("/api/v1/trips/{trip_id}", tags=["Trips"])
+def delete_trip(trip_id: int, db: Session = Depends(get_db)):
+    """Deletes a trip by ID. Returns 404 if the ID is not found."""
+    trip = db.query(Trip).filter(Trip.id == trip_id).first()
+    if not trip:
+        raise HTTPException(status_code=404, detail="Trip not found")
+
+    try:
+        db.delete(trip)
+        db.commit()
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Failed to delete trip: {str(e)}")
+
+    return {"message": f"Trip {trip_id} deleted successfully"}
 
 
 # ─── TRIP CATEGORIES ──────────────────────────────────────────────────────────
@@ -109,12 +194,12 @@ def list_recommendations() -> List[str]:
     return RECOMMENDATIONS
 
 @app.post("/api/v1/recommendations", tags=["Recommendations"])
-def get_recommendations(trip: TripRequest):
+def get_recommendations(req: TripRequest):
     """Returns personalised travel recommendations based on trip details."""
-    category      = get_trip_category(trip.budget)
-    transport     = get_transport_category(trip.budget)
-    daily_budget  = calculate_daily_budget(trip.budget, trip.days)
-    travel_season = get_travel_season(trip.travel_month) if trip.travel_month else None
+    category      = get_trip_category(req.budget)
+    transport     = get_transport_category(req.budget)
+    daily_budget  = calculate_daily_budget(req.budget, req.days)
+    travel_season = get_travel_season(req.travel_month) if req.travel_month else None
 
     if category == "Backpacker":
         tips = [
@@ -139,13 +224,13 @@ def get_recommendations(trip: TripRequest):
         ]
 
     return {
-        "destination":              trip.destination,
-        "days":                     trip.days,
-        "budget":                   trip.budget,
-        "currency":                 trip.currency,
+        "destination":              req.destination,
+        "days":                     req.days,
+        "budget":                   req.budget,
+        "currency":                 req.currency,
         "daily_budget":             round(daily_budget, 2),
-        "travel_style":             trip.travel_style,
-        "travel_month":             trip.travel_month,
+        "travel_style":             req.travel_style,
+        "travel_month":             req.travel_month,
         "travel_season":            travel_season,
         "category":                 category,
         "recommendation_transport": transport,
