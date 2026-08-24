@@ -11,11 +11,13 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 if not DATABASE_URL:
     raise ValueError("DATABASE_URL is not set in .env")
 
-# Supabase requires SSL — pool_pre_ping checks the connection is alive before use
+IS_POOLER = "pooler.supabase.com" in DATABASE_URL
+
 engine = create_engine(
     DATABASE_URL,
     pool_pre_ping=True,
-    connect_args={"sslmode": "require"},
+    # Pooler handles SSL internally — only force sslmode on direct connections
+    connect_args={} if IS_POOLER else {"sslmode": "require"},
 )
 
 # Factory for DB sessions
