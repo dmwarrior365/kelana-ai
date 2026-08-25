@@ -1,7 +1,9 @@
 from fastapi import FastAPI, Depends, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from typing import Optional, List
 from sqlalchemy.orm import Session
+from sqlalchemy import text
 
 from services.trip_service import (
     get_trip_category,
@@ -34,6 +36,13 @@ app = FastAPI(
     description="AI-powered travel planning API",
     version="1.0.0",
     lifespan=lifespan,
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:3000"],
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 

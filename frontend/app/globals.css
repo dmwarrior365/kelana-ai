@@ -1,0 +1,20 @@
+@import "tailwindcss";
+
+:root {
+  --background: #071220;
+  --foreground: #e2e8f0;
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-geist-sans), Arial, Helvetica, sans-serif;
+}
+
+/* Prose styles for markdown rendering */
+.prose h2 { margin-top: 1.5rem; margin-bottom: 0.5rem; }
+.prose h3 { margin-top: 1rem; margin-bottom: 0.25rem; }
+.prose ul { padding-left: 1.25rem; }
+.prose li { margin: 0.2rem 0; }
+.prose p { margin: 0.5rem 0; }
+.prose strong { font-weight: 700; }

@@ -216,3 +216,13 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# ─── Next.js / Frontend ───────────────────────────────────────────────────────
+frontend/.next/
+frontend/out/
+frontend/build/
+frontend/node_modules/
+frontend/.env*.local
+frontend/npm-debug.log*
+frontend/yarn-debug.log*
+frontend/yarn-error.log*
