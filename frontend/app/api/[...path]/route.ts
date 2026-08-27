@@ -2,28 +2,39 @@ import { type NextRequest, NextResponse } from "next/server";
 
 const BACKEND = process.env.BACKEND_URL ?? "http://localhost:8000";
 
-async function proxy(req: NextRequest, params: { path: string[] }) {
-  const { path } = await params;
+// params is a Promise in this Next.js version — must await before reading
+async function proxy(req: NextRequest, context: { params: Promise<{ path: string[] }> }) {
+  const { path } = await context.params;
   const url = `${BACKEND}/api/${path.join("/")}${req.nextUrl.search}`;
 
   const headers = new Headers(req.headers);
   headers.delete("host");
 
-  const res = await fetch(url, {
-    method: req.method,
-    headers,
-    body: req.method !== "GET" && req.method !== "HEAD" ? req.body : undefined,
-    // @ts-expect-error — Next.js 16 requires this to stream the request body
-    duplex: "half",
-  });
+  try {
+    const res = await fetch(url, {
+      method: req.method,
+      headers,
+      body: req.method !== "GET" && req.method !== "HEAD" ? req.body : undefined,
+      // @ts-expect-error — Next.js 16 requires this to stream the request body
+      duplex: "half",
+    });
 
-  return new NextResponse(res.body, {
-    status: res.status,
-    headers: res.headers,
-  });
+    return new NextResponse(res.body, {
+      status: res.status,
+      headers: res.headers,
+    });
+  } catch (err) {
+    // Backend is unreachable (not started, wrong port, etc.)
+    const message =
+      err instanceof Error && err.message.includes("ECONNREFUSED")
+        ? `Cannot reach backend at ${BACKEND}. Make sure it is running.`
+        : `Proxy error: ${err instanceof Error ? err.message : String(err)}`;
+
+    return NextResponse.json({ detail: message }, { status: 503 });
+  }
 }
 
-export const GET     = (req: NextRequest, { params }: { params: { path: string[] } }) => proxy(req, params);
-export const POST    = (req: NextRequest, { params }: { params: { path: string[] } }) => proxy(req, params);
-export const PUT     = (req: NextRequest, { params }: { params: { path: string[] } }) => proxy(req, params);
-export const DELETE  = (req: NextRequest, { params }: { params: { path: string[] } }) => proxy(req, params);
+export const GET    = (req: NextRequest, ctx: { params: Promise<{ path: string[] }> }) => proxy(req, ctx);
+export const POST   = (req: NextRequest, ctx: { params: Promise<{ path: string[] }> }) => proxy(req, ctx);
+export const PUT    = (req: NextRequest, ctx: { params: Promise<{ path: string[] }> }) => proxy(req, ctx);
+export const DELETE = (req: NextRequest, ctx: { params: Promise<{ path: string[] }> }) => proxy(req, ctx);
