@@ -6,6 +6,7 @@ import { useRouter } from "next/navigation";
 import { getTrip } from "@/services/tripService";
 import { CategoryBadge, TravelStyleBadge, Badge } from "@/components/Badge";
 import { formatBudget } from "@/components/TripCard";
+import AuthGuard from "@/components/AuthGuard";
 import type { Trip } from "@/types/trip";
 
 // ── Markdown parser (shared logic, self-contained here for the detail view) ───
@@ -218,7 +219,7 @@ function TripDetailSkeleton() {
 // ── Trip detail page ──────────────────────────────────────────────────────────
 
 // params is a Promise in this Next.js version — we use use() to unwrap it
-export default function TripDetailPage({ params }: { params: Promise<{ id: string }> }) {
+function TripDetailContent({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
   const router  = useRouter();
 
@@ -343,5 +344,13 @@ export default function TripDetailPage({ params }: { params: Promise<{ id: strin
         </div>
       )}
     </div>
+  );
+}
+
+export default function TripDetailPage({ params }: { params: Promise<{ id: string }> }) {
+  return (
+    <AuthGuard>
+      <TripDetailContent params={params} />
+    </AuthGuard>
   );
 }

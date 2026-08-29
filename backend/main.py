@@ -12,8 +12,10 @@ from services.trip_service import (
     calculate_daily_budget,
 )
 from services.bedrock_service import get_ai_recommendations
+from services.auth_service import register_user, login_user, get_current_user
 from database import Base, engine, get_db, check_db_connection
 from models.trip import Trip
+from models.user import User  # noqa: F401 — registers the table with Base.metadata
 
 import logging
 from contextlib import asynccontextmanager
@@ -21,15 +23,17 @@ from contextlib import asynccontextmanager
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Runs once on startup — safe to fail here without crashing the import
     try:
         Base.metadata.create_all(bind=engine)
+        logger.info("Database tables verified / created.")
     except Exception as e:
-        print(f"Warning: Could not create tables on startup: {e}")
+        # Log the full error — don't hide it
+        logger.error(f"create_all failed: {e}")
     yield
-    # Runs on shutdown (nothing to clean up for now)
+
 
 app = FastAPI(
     title="KelanaAI",
@@ -61,8 +65,8 @@ TRIP_CATEGORIES = [
 
 class TripRequest(BaseModel):
     destination:  str
-    days:         int   = Field(gt=0, description="Number of travel days")
-    budget:       float = Field(gt=0, description="Total trip budget")
+    days:         int   = Field(gt=0)
+    budget:       float = Field(gt=0)
     currency:     str   = "USD"
     travel_style: Optional[str] = None
     travel_month: Optional[str] = None
@@ -71,13 +75,21 @@ class BudgetRequest(BaseModel):
     budget: float = Field(gt=0)
 
 class BudgetUpdateRequest(BaseModel):
-    budget: float = Field(gt=0, description="New budget to update and recalculate from")
+    budget: float = Field(gt=0)
+
+class RegisterRequest(BaseModel):
+    name:     str
+    email:    str
+    password: str = Field(min_length=8)
+
+class LoginRequest(BaseModel):
+    email:    str
+    password: str
 
 
 # ─── SHARED HELPERS ───────────────────────────────────────────────────────────
 
 def compute_trip_fields(budget: float, days: int, travel_month: Optional[str]) -> dict:
-    """Central place for all derived field calculations."""
     return {
         "category":                 get_trip_category(budget),
         "recommendation_transport": get_transport_category(budget),
@@ -87,7 +99,6 @@ def compute_trip_fields(budget: float, days: int, travel_month: Optional[str]) -
 
 
 def _db_commit(db: Session, error_msg: str):
-    """Commit with automatic rollback on failure."""
     try:
         db.commit()
     except Exception as e:
@@ -96,10 +107,6 @@ def _db_commit(db: Session, error_msg: str):
 
 
 def _call_bedrock(trip: Trip) -> str:
-    """
-    Calls Amazon Bedrock using all available trip context.
-    Returns the AI-generated itinerary as a string.
-    """
     try:
         logger.info(f"Calling Bedrock for trip_id={trip.id}, destination={trip.destination}")
         result = get_ai_recommendations(
@@ -126,13 +133,6 @@ def _call_bedrock(trip: Trip) -> str:
 
 
 def _generate_and_save(db: Session, trip: Trip, strict: bool = True) -> None:
-    """
-    Generates the AI itinerary for `trip` and persists it to ai_recommendation.
-
-    strict=True  -> Bedrock/DB failures propagate as HTTP errors (explicit /generate call).
-    strict=False -> failures are logged and the trip is left with a null
-                    recommendation, so a Bedrock outage never blocks saving a trip.
-    """
     try:
         itinerary = _call_bedrock(trip)
     except HTTPException:
@@ -156,12 +156,9 @@ def _generate_and_save(db: Session, trip: Trip, strict: bool = True) -> None:
 
 
 def _trip_response(trip: Trip) -> dict:
-    """
-    Unified response template for all trip endpoints.
-    ai_recommendation is always included — null if not yet generated.
-    """
     return {
         "id":                       trip.id,
+        "user_id":                  trip.user_id,
         "destination":              trip.destination,
         "days":                     trip.days,
         "budget":                   trip.budget,
@@ -174,6 +171,16 @@ def _trip_response(trip: Trip) -> dict:
         "recommendation_transport": trip.recommendation_transport,
         "ai_recommendation":        trip.ai_recommendation,
     }
+
+
+def _get_own_trip(trip_id: int, current_user: User, db: Session) -> Trip:
+    """Fetch a trip by ID and verify it belongs to the current user."""
+    trip = db.query(Trip).filter(Trip.id == trip_id).first()
+    if not trip:
+        raise HTTPException(status_code=404, detail="Trip not found")
+    if trip.user_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Access denied")
+    return trip
 
 
 # ─── GENERAL ──────────────────────────────────────────────────────────────────
@@ -195,11 +202,16 @@ def health():
 # ─── TRIPS ────────────────────────────────────────────────────────────────────
 
 @app.post("/api/v1/trips", tags=["Trips"])
-def create_trip(req: TripRequest, db: Session = Depends(get_db)):
-    """Creates a trip, saves it to the database, and returns the saved record."""
+def create_trip(
+    req: TripRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Creates a trip owned by the authenticated user."""
     derived = compute_trip_fields(req.budget, req.days, req.travel_month)
 
     trip = Trip(
+        user_id      = current_user.id,
         destination  = req.destination,
         days         = req.days,
         budget       = req.budget,
@@ -211,39 +223,45 @@ def create_trip(req: TripRequest, db: Session = Depends(get_db)):
 
     try:
         db.add(trip)
-        db.commit()      # created_at is filled by the column's now() default
+        db.commit()
         db.refresh(trip)
     except Exception as e:
         db.rollback()
         raise HTTPException(status_code=500, detail=f"Failed to save trip: {str(e)}")
 
-    # Generate the itinerary up front; a Bedrock outage must not lose the trip
     _generate_and_save(db, trip, strict=False)
-
     return _trip_response(trip)
 
 
 @app.get("/api/v1/trips", tags=["Trips"])
-def list_trips(db: Session = Depends(get_db)):
-    """Returns all saved trips from the database."""
-    return [_trip_response(t) for t in db.query(Trip).all()]
+def list_trips(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Returns only the trips that belong to the authenticated user."""
+    trips = db.query(Trip).filter(Trip.user_id == current_user.id).all()
+    return [_trip_response(t) for t in trips]
 
 
 @app.get("/api/v1/trips/{trip_id}", tags=["Trips"])
-def get_trip(trip_id: int, db: Session = Depends(get_db)):
-    """Returns a single trip by ID."""
-    trip = db.query(Trip).filter(Trip.id == trip_id).first()
-    if not trip:
-        raise HTTPException(status_code=404, detail="Trip not found")
-    return _trip_response(trip)
+def get_trip(
+    trip_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Returns a single trip — only if it belongs to the authenticated user."""
+    return _trip_response(_get_own_trip(trip_id, current_user, db))
 
 
 @app.put("/api/v1/trips/{trip_id}", tags=["Trips"])
-def update_trip(trip_id: int, req: BudgetUpdateRequest, db: Session = Depends(get_db)):
-    """Updates the budget for a trip and recalculates all derived fields."""
-    trip = db.query(Trip).filter(Trip.id == trip_id).first()
-    if not trip:
-        raise HTTPException(status_code=404, detail="Trip not found")
+def update_trip(
+    trip_id: int,
+    req: BudgetUpdateRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Updates the budget for the user's own trip and recalculates derived fields."""
+    trip = _get_own_trip(trip_id, current_user, db)
 
     derived = compute_trip_fields(req.budget, trip.days, trip.travel_month)
     trip.budget = req.budget
@@ -252,19 +270,18 @@ def update_trip(trip_id: int, req: BudgetUpdateRequest, db: Session = Depends(ge
 
     _db_commit(db, "Failed to update trip")
     db.refresh(trip)
-
-    # Budget, category and daily budget all changed — the old itinerary is stale
     _generate_and_save(db, trip, strict=False)
-
     return _trip_response(trip)
 
 
 @app.delete("/api/v1/trips/{trip_id}", tags=["Trips"])
-def delete_trip(trip_id: int, db: Session = Depends(get_db)):
-    """Deletes a trip by ID. Returns 404 if the ID is not found."""
-    trip = db.query(Trip).filter(Trip.id == trip_id).first()
-    if not trip:
-        raise HTTPException(status_code=404, detail="Trip not found")
+def delete_trip(
+    trip_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Deletes the user's own trip."""
+    trip = _get_own_trip(trip_id, current_user, db)
 
     try:
         db.delete(trip)
@@ -277,15 +294,13 @@ def delete_trip(trip_id: int, db: Session = Depends(get_db)):
 
 
 @app.post("/api/v1/trips/{trip_id}/generate", tags=["Trips"])
-def generate_ai_recommendation(trip_id: int, db: Session = Depends(get_db)):
-    """
-    Generates a structured AI itinerary for an existing trip via Amazon Bedrock
-    and saves it to the ai_recommendation column.
-    """
-    trip = db.query(Trip).filter(Trip.id == trip_id).first()
-    if not trip:
-        raise HTTPException(status_code=404, detail="Trip not found")
-
+def generate_ai_recommendation(
+    trip_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Re-generates the AI itinerary for the user's own trip."""
+    trip = _get_own_trip(trip_id, current_user, db)
     _generate_and_save(db, trip, strict=True)
     return _trip_response(trip)
 
@@ -294,30 +309,23 @@ def generate_ai_recommendation(trip_id: int, db: Session = Depends(get_db)):
 
 @app.get("/api/v1/trip-categories", tags=["Trip Categories"])
 def list_trip_categories():
-    """Returns all available trip categories and their budget ranges."""
     return TRIP_CATEGORIES
 
 
 @app.post("/api/v1/trip-categories", tags=["Trip Categories"])
 def get_category(req: BudgetRequest):
-    """Returns the trip category for a given budget."""
-    return {
-        "budget":   req.budget,
-        "category": get_trip_category(req.budget),
-    }
+    return {"budget": req.budget, "category": get_trip_category(req.budget)}
 
 
 # ─── TRANSPORTATIONS ──────────────────────────────────────────────────────────
 
 @app.get("/api/v1/transportations", tags=["Transportations"])
 def list_transportations() -> List[str]:
-    """Returns a list of all available transport options."""
     return TRANSPORTATIONS
 
 
 @app.post("/api/v1/transportations", tags=["Transportations"])
 def get_transportation(req: BudgetRequest):
-    """Returns the recommended transport for a given budget."""
     return {
         "budget":                   req.budget,
         "category":                 get_trip_category(req.budget),
@@ -329,5 +337,29 @@ def get_transportation(req: BudgetRequest):
 
 @app.get("/api/v1/recommendations", tags=["Recommendations"])
 def list_recommendations() -> List[str]:
-    """Returns a list of recommended places to visit."""
     return RECOMMENDATIONS
+
+
+# ─── AUTH ─────────────────────────────────────────────────────────────────────
+
+@app.post("/api/v1/auth/register", status_code=201, tags=["Auth"])
+def register(req: RegisterRequest, db: Session = Depends(get_db)):
+    """Creates a new user account with a bcrypt-hashed password."""
+    user = register_user(req.name, req.email, req.password, db)
+    return {"id": user.id, "name": user.name, "email": user.email}
+
+
+@app.post("/api/v1/auth/login", tags=["Auth"])
+def login(req: LoginRequest, db: Session = Depends(get_db)):
+    """Verifies credentials and returns a signed JWT."""
+    return login_user(req.email, req.password, db)
+
+
+@app.get("/api/v1/auth/me", tags=["Auth"])
+def me(current_user: User = Depends(get_current_user)):
+    """Returns the profile of the currently authenticated user."""
+    return {
+        "id":    current_user.id,
+        "name":  current_user.name,
+        "email": current_user.email,
+    }

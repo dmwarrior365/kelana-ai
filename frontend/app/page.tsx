@@ -6,6 +6,8 @@ import { useRouter } from "next/navigation";
 import { generateTrip, getTrips } from "@/services/tripService";
 import TripCard from "@/components/TripCard";
 import { EmptyState } from "@/components/EmptyState";
+import AuthGuard from "@/components/AuthGuard";
+import { useAuth } from "@/context/AuthContext";
 import type { Trip, TravelStyle, SortField, SortOrder } from "@/types/trip";
 
 // ── Tab type ──────────────────────────────────────────────────────────────────
@@ -215,6 +217,14 @@ function LoadingScreen() {
 // ── Nav bar ───────────────────────────────────────────────────────────────────
 
 function NavBar({ activeTab, onTabChange }: { activeTab: Tab; onTabChange: (t: Tab) => void }) {
+  const { user, logout } = useAuth();
+  const router = useRouter();
+
+  function handleLogout() {
+    logout();
+    router.push("/login");
+  }
+
   return (
     <div className="sticky top-0 z-20 bg-[#071220]/90 backdrop-blur border-b border-blue-900/40 shadow-lg">
       <div className="max-w-4xl mx-auto px-4 sm:px-6 flex items-center gap-6 h-14">
@@ -240,7 +250,34 @@ function NavBar({ activeTab, onTabChange }: { activeTab: Tab; onTabChange: (t: T
           ))}
         </nav>
 
-        <div className="ml-auto" />
+        <div className="ml-auto flex items-center gap-3">
+          {user ? (
+            <>
+              <span className="text-blue-300/70 text-xs hidden sm:block">
+                Welcome back, {user.name.split(" ")[0]} 👋
+              </span>
+              <Link
+                href="/profile"
+                className="text-xs text-blue-400/60 hover:text-blue-300 transition hidden sm:block"
+              >
+                Profile
+              </Link>
+              <button
+                onClick={handleLogout}
+                className="text-xs text-blue-400/60 hover:text-red-400 transition cursor-pointer"
+              >
+                Sign out
+              </button>
+            </>
+          ) : (
+            <Link
+              href="/login"
+              className="text-xs px-3 py-1.5 rounded-full bg-blue-600 hover:bg-blue-500 text-white font-semibold transition"
+            >
+              Sign in
+            </Link>
+          )}
+        </div>
       </div>
     </div>
   );
@@ -325,9 +362,15 @@ function TripForm({ onSuccess, onError, onLoading }: TripFormProps) {
   const [budget, setBudget]           = useState("");
   const [travelStyle, setTravelStyle] = useState("");
   const [travelMonth, setTravelMonth] = useState("");
+  const { user }                      = useAuth();
+  const router                        = useRouter();
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
+    if (!user) {
+      router.push("/login");
+      return;
+    }
     onLoading();
     try {
       const trip = await generateTrip({
@@ -482,6 +525,16 @@ function HomeTabContent() {
   const [trip, setTrip]         = useState<Trip | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [showForm, setShowForm] = useState(false);
+  const { user }                = useAuth();
+  const router                  = useRouter();
+
+  function handlePlanTrip() {
+    if (!user) {
+      router.push("/login");
+      return;
+    }
+    setShowForm(true);
+  }
 
   if (formView === "loading") return <LoadingScreen />;
   if (formView === "result" && trip) return <ResultView trip={trip} onReset={() => { setTrip(null); setFormView("form"); setShowForm(false); }} />;
@@ -489,7 +542,7 @@ function HomeTabContent() {
 
   return (
     <div className="bg-[#071220] min-h-screen">
-      <HeroSection onPlanTrip={() => setShowForm(true)} />
+      <HeroSection onPlanTrip={handlePlanTrip} />
 
       {showForm && (
         <TripForm
@@ -833,14 +886,28 @@ function MyTripsTab({ onPlanTrip }: { onPlanTrip: () => void }) {
 
 export default function Home() {
   const [activeTab, setActiveTab] = useState<Tab>("home");
+  const { user } = useAuth();
+  const router = useRouter();
+
+  function handleTabChange(tab: Tab) {
+    if (tab === "trips" && !user) {
+      router.push("/login");
+      return;
+    }
+    setActiveTab(tab);
+  }
 
   return (
     <div className="min-h-screen bg-[#071220] text-white">
-      <NavBar activeTab={activeTab} onTabChange={setActiveTab} />
+      <NavBar activeTab={activeTab} onTabChange={handleTabChange} />
 
       {activeTab === "home" && <HomeTabContent />}
 
-      {activeTab === "trips" && <MyTripsTab onPlanTrip={() => setActiveTab("home")} />}
+      {activeTab === "trips" && (
+        <AuthGuard>
+          <MyTripsTab onPlanTrip={() => setActiveTab("home")} />
+        </AuthGuard>
+      )}
     </div>
   );
 }

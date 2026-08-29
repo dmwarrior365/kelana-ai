@@ -6,6 +6,7 @@ export type TravelStyle = "Backpacker" | "Family" | "Solo" | "Couple" | "Luxury"
 
 export interface Trip {
   id: number;
+  user_id: number;
   destination: string;
   days: number;
   budget: number;

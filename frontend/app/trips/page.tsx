@@ -2,9 +2,12 @@
 
 import { useState, useEffect, useMemo } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { getTrips } from "@/services/tripService";
 import TripCard from "@/components/TripCard";
 import { EmptyState } from "@/components/EmptyState";
+import AuthGuard from "@/components/AuthGuard";
+import { useAuth } from "@/context/AuthContext";
 import type { Trip, TravelStyle, SortField, SortOrder } from "@/types/trip";
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -193,7 +196,14 @@ function Pagination({ page, totalPages, onPage }: PaginationProps) {
 
 // ── My Trips page ─────────────────────────────────────────────────────────────
 
-export default function TripsPage() {
+function TripsPageContent() {
+  const { user, logout } = useAuth();
+  const router = useRouter();
+
+  function handleLogout() {
+    logout();
+    router.push("/login");
+  }
   const [trips, setTrips]           = useState<Trip[]>([]);
   const [loading, setLoading]       = useState(true);
   const [error, setError]           = useState<string | null>(null);
@@ -263,9 +273,26 @@ export default function TripsPage() {
           </Link>
           <span className="text-blue-700/60 select-none hidden sm:block">›</span>
           <span className="text-blue-200/70 text-sm hidden sm:block">My Trips</span>
-          <div className="ml-auto">
+          <div className="ml-auto flex items-center gap-3">
+            {user && (
+              <span className="text-blue-300/70 text-xs hidden sm:block">
+                Welcome back, {user.name.split(" ")[0]} 👋
+              </span>
+            )}
+            <Link
+              href="/profile"
+              className="text-xs text-blue-400/60 hover:text-blue-300 transition hidden sm:block"
+            >
+              Profile
+            </Link>
+            <button
+              onClick={handleLogout}
+              className="text-xs text-blue-400/60 hover:text-red-400 transition cursor-pointer"
+            >
+              Sign out
+            </button>
             <Link href="/" className="text-xs text-blue-400/60 hover:text-blue-300 transition">
-              ← Back to Home
+              ← Home
             </Link>
           </div>
         </div>
@@ -352,5 +379,13 @@ export default function TripsPage() {
         )}
       </div>
     </div>
+  );
+}
+
+export default function TripsPage() {
+  return (
+    <AuthGuard>
+      <TripsPageContent />
+    </AuthGuard>
   );
 }
