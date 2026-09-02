@@ -248,6 +248,12 @@ function NavBar({ activeTab, onTabChange }: { activeTab: Tab; onTabChange: (t: T
               {tab === "home" ? "🏠 Home" : "🗺️ My Trips"}
             </button>
           ))}
+          <Link
+            href="/assistant"
+            className="px-4 py-1.5 rounded-full text-sm font-semibold transition-all text-blue-300/70 hover:text-blue-200 hover:bg-blue-800/30"
+          >
+            🤖 Assistant
+          </Link>
         </nav>
 
         <div className="ml-auto flex items-center gap-3">

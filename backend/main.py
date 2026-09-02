@@ -13,6 +13,7 @@ from services.trip_service import (
 )
 from services.bedrock_service import get_ai_recommendations
 from services.auth_service import register_user, login_user, get_current_user
+from services.kb_service import ask_knowledge_base, retrieve_passages
 from database import Base, engine, get_db, check_db_connection
 from models.trip import Trip
 from models.user import User  # noqa: F401 — registers the table with Base.metadata
@@ -85,6 +86,13 @@ class RegisterRequest(BaseModel):
 class LoginRequest(BaseModel):
     email:    str
     password: str
+
+class KBQuestionRequest(BaseModel):
+    question:          str
+    number_of_results: int = Field(default=3, ge=1, le=10)
+
+class QuestionRequest(BaseModel):
+    question: str
 
 
 # ─── SHARED HELPERS ───────────────────────────────────────────────────────────
@@ -196,6 +204,35 @@ def health():
     return {
         "status":   "ok" if db_ok else "degraded",
         "database": "connected" if db_ok else "unreachable",
+    }
+
+
+# ─── ASK ──────────────────────────────────────────────────────────────────────
+
+@app.post("/api/v1/ask", tags=["Ask"])
+def ask_endpoint(request: QuestionRequest):
+    """
+    Send a question to the Bedrock Knowledge Base and return a grounded answer.
+
+    The backend orchestrates three steps automatically:
+      1. Sends the question to the Knowledge Base.
+      2. Receives the grounded answer from Bedrock (RetrieveAndGenerate).
+      3. Returns the answer to the caller.
+
+    AWS credentials never leave the backend — the frontend only calls this endpoint.
+    """
+    try:
+        answer, sources = ask_knowledge_base(request.question)
+    except ValueError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    except Exception as e:
+        logger.error(f"/api/v1/ask error: {type(e).__name__}: {e}")
+        raise HTTPException(status_code=502, detail=f"Knowledge Base error: {str(e)}")
+
+    return {
+        "question": request.question,
+        "answer":   answer,
+        "sources":  sources,
     }
 
 
@@ -338,6 +375,58 @@ def get_transportation(req: BudgetRequest):
 @app.get("/api/v1/recommendations", tags=["Recommendations"])
 def list_recommendations() -> List[str]:
     return RECOMMENDATIONS
+
+
+# ─── KNOWLEDGE BASE ───────────────────────────────────────────────────────────
+
+@app.post("/api/v1/kb/ask", tags=["Knowledge Base"])
+def kb_ask(
+    req: KBQuestionRequest,
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Ask a question against the Bedrock Knowledge Base.
+
+    Bedrock retrieves relevant document passages and generates a grounded
+    answer in a single API call (RetrieveAndGenerate / RAG).
+    """
+    try:
+        answer = ask_knowledge_base(
+            question=req.question,
+            number_of_results=req.number_of_results,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    except Exception as e:
+        logger.error(f"KB ask error: {type(e).__name__}: {e}")
+        raise HTTPException(status_code=502, detail=f"Knowledge Base error: {str(e)}")
+
+    return {"question": req.question, "answer": answer}
+
+
+@app.post("/api/v1/kb/retrieve", tags=["Knowledge Base"])
+def kb_retrieve(
+    req: KBQuestionRequest,
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Retrieve raw document passages from the Knowledge Base without generation.
+
+    Returns the top matching chunks with their relevance scores and source URIs,
+    useful for debugging retrieval quality or building custom prompts.
+    """
+    try:
+        passages = retrieve_passages(
+            question=req.question,
+            number_of_results=req.number_of_results,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    except Exception as e:
+        logger.error(f"KB retrieve error: {type(e).__name__}: {e}")
+        raise HTTPException(status_code=502, detail=f"Knowledge Base error: {str(e)}")
+
+    return {"question": req.question, "passages": passages}
 
 
 # ─── AUTH ─────────────────────────────────────────────────────────────────────
