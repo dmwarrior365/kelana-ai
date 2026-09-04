@@ -249,10 +249,10 @@ function NavBar({ activeTab, onTabChange }: { activeTab: Tab; onTabChange: (t: T
             </button>
           ))}
           <Link
-            href="/assistant"
+            href="/chat"
             className="px-4 py-1.5 rounded-full text-sm font-semibold transition-all text-blue-300/70 hover:text-blue-200 hover:bg-blue-800/30"
           >
-            🤖 Assistant
+            💬 Chat
           </Link>
         </nav>
 

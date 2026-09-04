@@ -225,3 +225,62 @@ def get_ai_recommendations(
         if "text" in block
     ]
     return "\n".join(text_parts)
+
+
+# ─── CHAT CONVERSE ────────────────────────────────────────────────────────────
+
+CHAT_SYSTEM_PROMPT = (
+    "You are Kelana, a friendly and knowledgeable AI travel assistant. "
+    "Help users plan trips, discover destinations, estimate budgets, and find local experiences. "
+    "Be concise, practical, and warm. When you don't know something, say so honestly. "
+    "Always tailor your advice to the user's stated budget and travel style when provided."
+)
+
+
+def chat_converse(
+    messages: list[dict],
+    system_prompt: str = CHAT_SYSTEM_PROMPT,
+    max_tokens: int = 1024,
+    temperature: float = 0.7,
+) -> str:
+    """
+    Send a multi-turn conversation to Bedrock using the Converse API.
+
+    Args:
+        messages:      List of dicts in Bedrock Converse format:
+                       [{"role": "user"|"assistant", "content": [{"text": str}]}, ...]
+                       Must start with a "user" turn and alternate roles.
+        system_prompt: System-level instruction injected before the conversation.
+        max_tokens:    Maximum tokens for the assistant reply.
+        temperature:   Sampling temperature (0.0 = deterministic, 1.0 = creative).
+
+    Returns:
+        The assistant's reply as a plain string.
+
+    Raises:
+        ValueError: If required environment variables are missing.
+        Exception:  Propagated from boto3 / Bedrock on API errors.
+    """
+    client = get_bedrock_client()
+
+    response = client.converse(
+        modelId=MODEL_ID,
+        system=[{"text": system_prompt}],
+        messages=messages,
+        inferenceConfig={
+            "maxTokens": max_tokens,
+            "temperature": temperature,
+        },
+    )
+
+    if response.get("stopReason") == "max_tokens":
+        logger.warning(
+            f"chat_converse: response hit the {max_tokens}-token cap — reply may be truncated."
+        )
+
+    text_parts: list[str] = [
+        block["text"]
+        for block in response["output"]["message"]["content"]
+        if "text" in block
+    ]
+    return "\n".join(text_parts)

@@ -14,9 +14,18 @@ from services.trip_service import (
 from services.bedrock_service import get_ai_recommendations
 from services.auth_service import register_user, login_user, get_current_user
 from services.kb_service import ask_knowledge_base, retrieve_passages
+from services.conversation_service import (
+    create_conversation,
+    list_conversations,
+    get_conversation,
+    add_message,
+    list_messages,
+    send_message,
+)
 from database import Base, engine, get_db, check_db_connection
 from models.trip import Trip
-from models.user import User  # noqa: F401 — registers the table with Base.metadata
+import models  # noqa: F401 — registers all tables (User, Trip, Conversation, Message) with Base.metadata
+from models.user import User
 
 import logging
 from contextlib import asynccontextmanager
@@ -93,6 +102,17 @@ class KBQuestionRequest(BaseModel):
 
 class QuestionRequest(BaseModel):
     question: str
+
+class ConversationCreateRequest(BaseModel):
+    title:         Optional[str] = None
+    first_message: Optional[str] = None   # used to auto-derive title if title omitted
+
+class ConversationRenameRequest(BaseModel):
+    title: str = Field(min_length=1, max_length=120)
+
+class MessageCreateRequest(BaseModel):
+    role:    str   # "user" | "assistant"
+    content: str
 
 
 # ─── SHARED HELPERS ───────────────────────────────────────────────────────────
@@ -452,3 +472,167 @@ def me(current_user: User = Depends(get_current_user)):
         "name":  current_user.name,
         "email": current_user.email,
     }
+
+
+# ─── CONVERSATIONS ────────────────────────────────────────────────────────────
+
+def _conversation_response(conv) -> dict:
+    return {
+        "id":         conv.id,
+        "user_id":    conv.user_id,
+        "title":      conv.title,
+        "created_at": conv.created_at.isoformat() if conv.created_at else None,
+        "updated_at": conv.updated_at.isoformat() if conv.updated_at else None,
+    }
+
+
+def _message_response(msg) -> dict:
+    return {
+        "id":              msg.id,
+        "conversation_id": msg.conversation_id,
+        "role":            msg.role,
+        "content":         msg.content,
+        "created_at":      msg.created_at.isoformat() if msg.created_at else None,
+    }
+
+
+@app.post("/api/v1/conversations", status_code=201, tags=["Conversations"])
+def create_conversation_endpoint(
+    req: ConversationCreateRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Create a new conversation row for the authenticated user.
+
+    Optionally pass `title` directly, or `first_message` to have the title
+    auto-derived from the first 60 characters of that message.
+    Returns the new conversation's identifier.
+    """
+    try:
+        conv = create_conversation(
+            user_id=current_user.id,
+            db=db,
+            title=req.title,
+            first_message=req.first_message,
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to create conversation: {str(e)}")
+
+    return {"conversation_id": conv.id}
+
+
+@app.get("/api/v1/conversations", tags=["Conversations"])
+def list_conversations_endpoint(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    List all previous conversations for the authenticated user, newest first.
+    Returns id, title, and created_at for each conversation.
+    """
+    convs = list_conversations(user_id=current_user.id, db=db)
+    return [_conversation_response(c) for c in convs]
+
+
+@app.get("/api/v1/conversations/{conversation_id}", tags=["Conversations"])
+def get_conversation_endpoint(
+    conversation_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Return a single conversation with its full message history."""
+    conv = get_conversation(conversation_id, current_user.id, db)
+    if not conv:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+
+    return {
+        **_conversation_response(conv),
+        "messages": [_message_response(m) for m in conv.messages],
+    }
+
+
+@app.patch("/api/v1/conversations/{conversation_id}", tags=["Conversations"])
+def rename_conversation_endpoint(
+    conversation_id: int,
+    req: ConversationRenameRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Rename a conversation title. Only the owner may rename it."""
+    conv = get_conversation(conversation_id, current_user.id, db)
+    if not conv:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    try:
+        conv.title = req.title.strip()
+        db.commit()
+        db.refresh(conv)
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Failed to rename conversation: {str(e)}")
+    return _conversation_response(conv)
+
+
+@app.post("/api/v1/conversations/{conversation_id}/messages", status_code=201, tags=["Conversations"])
+def send_message_endpoint(
+    conversation_id: int,
+    req: MessageCreateRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Send a user message and receive an AI reply — full 7-step orchestration.
+
+    Steps (all handled server-side):
+      01  Receive user message
+      02  Save user message to DB
+      03  Load previous messages (conversation history)
+      04  Build Bedrock Converse prompt from history
+      05  Call Amazon Bedrock (Nova Lite via Converse API)
+      06  Save AI response to DB
+      07  Return both messages to the caller
+
+    Request body: { "role": "user", "content": "<message text>" }
+    The `role` field must be "user" — only users initiate turns via this endpoint.
+
+    Returns:
+      {
+        "user_message":      { id, conversation_id, role, content, created_at },
+        "assistant_message": { id, conversation_id, role, content, created_at }
+      }
+    """
+    if req.role != "user":
+        raise HTTPException(
+            status_code=422,
+            detail="role must be 'user' — assistant replies are generated automatically.",
+        )
+
+    try:
+        result = send_message(
+            conversation_id=conversation_id,
+            user_id=current_user.id,
+            user_content=req.content,
+            db=db,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        logger.error(f"send_message error conv={conversation_id}: {type(e).__name__}: {e}")
+        raise HTTPException(status_code=502, detail=f"AI service error: {str(e)}")
+
+    return result
+
+
+@app.get("/api/v1/conversations/{conversation_id}/messages", tags=["Conversations"])
+def list_messages_endpoint(
+    conversation_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Return all messages in a conversation in chronological order."""
+    conv = get_conversation(conversation_id, current_user.id, db)
+    if not conv:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+
+    msgs = list_messages(conversation_id=conversation_id, db=db)
+    return [_message_response(m) for m in msgs]
