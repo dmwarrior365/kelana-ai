@@ -9,6 +9,8 @@ async function proxy(req: NextRequest, context: { params: Promise<{ path: string
 
   const headers = new Headers(req.headers);
   headers.delete("host");
+  headers.delete("content-length");
+  headers.delete("transfer-encoding");
 
   try {
     const res = await fetch(url, {
@@ -19,9 +21,16 @@ async function proxy(req: NextRequest, context: { params: Promise<{ path: string
       duplex: "half",
     });
 
+    const responseHeaders = new Headers();
+    res.headers.forEach((value, key) => {
+      // Skip headers that Vercel/Next.js manages itself
+      if (["transfer-encoding", "connection", "keep-alive"].includes(key.toLowerCase())) return;
+      responseHeaders.set(key, value);
+    });
+
     return new NextResponse(res.body, {
       status: res.status,
-      headers: res.headers,
+      headers: responseHeaders,
     });
   } catch (err) {
     // Backend is unreachable (not started, wrong port, etc.)
