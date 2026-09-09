@@ -64,6 +64,15 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Tell Cloudflare and any CDN not to re-encode responses —
+# prevents ERR_CONTENT_DECODING_FAILED when content-encoding gets mangled
+@app.middleware("http")
+async def no_transform(request, call_next):
+    response = await call_next(request)
+    response.headers["Cache-Control"] = "no-transform"
+    response.headers["Vary"] = "Accept-Encoding"
+    return response
+
 
 # ─── STATIC DATA ──────────────────────────────────────────────────────────────
 

@@ -43,7 +43,7 @@ async function handleResponse<T>(res: Response): Promise<T> {
 export async function register(payload: RegisterPayload): Promise<AuthUser> {
   const res = await fetch(`${AUTH_URL}/register`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", "Accept-Encoding": "identity" },
     body: JSON.stringify(payload),
   });
   return handleResponse<AuthUser>(res);
@@ -53,7 +53,7 @@ export async function register(payload: RegisterPayload): Promise<AuthUser> {
 export async function login(payload: LoginPayload): Promise<AuthUser> {
   const res = await fetch(`${AUTH_URL}/login`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", "Accept-Encoding": "identity" },
     body: JSON.stringify(payload),
   });
   const { access_token } = await handleResponse<TokenResponse>(res);
@@ -67,7 +67,7 @@ export async function fetchMe(token?: string): Promise<AuthUser> {
   const t = token ?? getStoredToken();
   if (!t) throw new Error("Not authenticated");
   const res = await fetch(`${AUTH_URL}/me`, {
-    headers: { Authorization: `Bearer ${t}` },
+    headers: { Authorization: `Bearer ${t}`, "Accept-Encoding": "identity" },
   });
   return handleResponse<AuthUser>(res);
 }
