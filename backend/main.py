@@ -27,6 +27,7 @@ from models.trip import Trip
 import models  # noqa: F401 — registers all tables (User, Trip, Conversation, Message) with Base.metadata
 from models.user import User
 
+import os
 import logging
 from contextlib import asynccontextmanager
 
@@ -54,7 +55,11 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],
+    allow_origins=[
+        origin.strip()
+        for origin in os.environ.get("FRONTEND_URL", "http://localhost:3000").split(",")
+        if origin.strip()
+    ],
     allow_methods=["*"],
     allow_headers=["*"],
 )
