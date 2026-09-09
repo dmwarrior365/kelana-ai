@@ -1,10 +1,11 @@
 import { type NextRequest, NextResponse } from "next/server";
 
 export const runtime = "nodejs";
+// Tell Vercel not to compress this route — we handle raw binary passthrough
+export const dynamic = "force-dynamic";
 
 const BACKEND = process.env.BACKEND_URL ?? "https://kelana-ai-06269263.fastapicloud.dev";
 
-// Hop-by-hop and encoding headers that must not be forwarded
 const STRIP_REQ = new Set([
   "host", "connection", "keep-alive", "transfer-encoding",
   "te", "upgrade", "proxy-authorization", "proxy-authenticate",
@@ -23,22 +24,20 @@ async function proxy(
   const { path } = await context.params;
   const url = `${BACKEND}/api/${path.join("/")}${req.nextUrl.search}`;
 
-  // Build clean request headers
-  const reqHeaders: Record<string, string> = {};
+  // Build clean request headers — no compression, no hop-by-hop
+  const reqHeaders: Record<string, string> = { "accept-encoding": "identity" };
   req.headers.forEach((value, key) => {
     if (!STRIP_REQ.has(key.toLowerCase())) {
       reqHeaders[key] = value;
     }
   });
 
-  // Buffer body — streaming is unreliable on Vercel
+  // Buffer body
   let body: string | undefined;
   if (req.method !== "GET" && req.method !== "HEAD") {
     body = await req.text();
     if (body === "") body = undefined;
-    if (body) {
-      reqHeaders["content-length"] = Buffer.byteLength(body).toString();
-    }
+    if (body) reqHeaders["content-length"] = Buffer.byteLength(body).toString();
   }
 
   try {
@@ -48,11 +47,12 @@ async function proxy(
       body,
     });
 
-    // Read as buffer — avoids any re-encoding by the runtime
     const resBuffer = await res.arrayBuffer();
 
-    // Build clean response headers
-    const resHeaders: Record<string, string> = {};
+    const resHeaders: Record<string, string> = {
+      // Explicitly tell Vercel and the browser: no encoding applied
+      "content-encoding": "identity",
+    };
     res.headers.forEach((value, key) => {
       if (!STRIP_RES.has(key.toLowerCase())) {
         resHeaders[key] = value;
