@@ -1,6 +1,6 @@
 import { type NextRequest, NextResponse } from "next/server";
 
-const BACKEND = process.env.BACKEND_URL ?? "http://localhost:8000";
+const BACKEND = process.env.BACKEND_URL ?? "https://kelana-ai-06269263.fastapicloud.dev";
 
 // params is a Promise in this Next.js version — must await before reading
 async function proxy(req: NextRequest, context: { params: Promise<{ path: string[] }> }) {
@@ -27,7 +27,7 @@ async function proxy(req: NextRequest, context: { params: Promise<{ path: string
     // Backend is unreachable (not started, wrong port, etc.)
     const message =
       err instanceof Error && err.message.includes("ECONNREFUSED")
-        ? `Cannot reach backend at ${BACKEND}. Make sure it is running.`
+        ? `Cannot reach backend at ${BACKEND}.`
         : `Proxy error: ${err instanceof Error ? err.message : String(err)}`;
 
     return NextResponse.json({ detail: message }, { status: 503 });
