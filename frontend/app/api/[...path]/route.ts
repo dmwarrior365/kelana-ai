@@ -11,6 +11,9 @@ async function proxy(req: NextRequest, context: { params: Promise<{ path: string
   headers.delete("host");
   headers.delete("content-length");
   headers.delete("transfer-encoding");
+  // Disable compression — Next.js fetch auto-decompresses, so forwarding
+  // content-encoding to the browser causes ERR_CONTENT_DECODING_FAILED
+  headers.delete("accept-encoding");
 
   try {
     const res = await fetch(url, {
@@ -23,8 +26,8 @@ async function proxy(req: NextRequest, context: { params: Promise<{ path: string
 
     const responseHeaders = new Headers();
     res.headers.forEach((value, key) => {
-      // Skip headers that Vercel/Next.js manages itself
-      if (["transfer-encoding", "connection", "keep-alive"].includes(key.toLowerCase())) return;
+      // Skip headers that Vercel/Next.js manages itself or cause decoding issues
+      if (["transfer-encoding", "connection", "keep-alive", "content-encoding"].includes(key.toLowerCase())) return;
       responseHeaders.set(key, value);
     });
 
